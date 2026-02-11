@@ -295,6 +295,41 @@ def simulate_v4_aligned_paths(params, y_bar, rng):
     return x, cashflow
 
 
+def v4_analytic_transient_q(params, q, y):
+    """
+    Transient-Q analytic approximation for V4:
+    E[y_{J_t}] is computed from initial state j0 via exp(Q t),
+    and E[X_t]=x0*exp(mu* t) under constant mu*.
+    This avoids the absorbing-state stationary-distribution bias.
+    """
+    r = params["r"]
+    tau = params["tau"]
+    c = params["c"]
+    L = params["L"]
+    dt = params["dt"]
+    m_steps = params["m_steps"]
+    x0 = params["x0"]
+    j0 = params["j0"]
+    mu_star = compute_mu_star(params)
+
+    value = 0.0
+    for m in range(m_steps):
+        t = m * dt
+        qt = [[q[i][j] * t for j in range(3)] for i in range(3)]
+        p_t = normalize_rows(mat_exp_series(qt))
+        ey = sum(p_t[j0][k] * y[k] for k in range(3))
+        ex = x0 * math.exp(mu_star * t)
+        cf = (1.0 - tau) * ex * ey - c
+        value += math.exp(-r * t) * cf * dt
+
+    # finite horizon salvage value
+    T = m_steps * dt
+    value += math.exp(-r * T) * L
+
+    # immediate abandonment lower bound
+    return max(L, value)
+
+
 def simulate_v4_paths(params, q, y, rng):
     n_paths = params["n_paths"]
     m_steps = params["m_steps"]
@@ -430,12 +465,12 @@ def main():
     # Keep old reference formula (CTMC-aggregated V4 closed form)
     v4_closed_ref = v4_closed_form_single_threshold(params["x0"], params, q, y)
 
-    # Aligned V4 comparison: closed-form and LSM share the same single-state y_bar approximation
-    pi = stationary_distribution_3state(q)
-    y_bar = sum(pi[k] * y[k] for k in range(3))
-    v4_closed = v4_closed_form_from_ybar(params["x0"], params, y_bar)
-    x4a, cf4a = simulate_v4_aligned_paths(params, y_bar, rng)
-    v4_lsm = lsm_backward_1d(cf4a, x4a, params)
+    # Updated V4 analytic approximation using transient Q (non-stationary legal-state effect)
+    v4_closed = v4_analytic_transient_q(params, q, y)
+
+    # Keep V4 LSM under original V4 simulation (CTMC + constant mu*)
+    x4, j4, rho4, cf4 = simulate_v4_paths(params, q, y, rng)
+    v4_lsm = lsm_backward(cf4, x4, j4, rho4, params)
 
     x5, j5, rho5, cf5 = simulate_v5_paths(params, q, y, rng)
     v5_lsm = lsm_backward(cf5, x5, j5, rho5, params)
